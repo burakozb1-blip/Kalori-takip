@@ -246,17 +246,14 @@ let modalState = null; // yemek ekleme modalı için lokal durum
 /* ============================== FIREBASE (BULUT) YAPILANDIRMASI ============================== */
 // Firebase kurulum rehberinin 2. adımından sonra buraya firebaseConfig objesini yapıştır.
 // Boş bıraktığın sürece uygulama otomatik olarak bu cihazın yerel depolamasını (localStorage) kullanır.
-const FIREBASE_CONFIG = null;
-/* örnek:
 const FIREBASE_CONFIG = {
-  apiKey: "...",
-  authDomain: "kalori-takip.firebaseapp.com",
-  projectId: "kalori-takip",
-  storageBucket: "kalori-takip.appspot.com",
-  messagingSenderId: "...",
-  appId: "..."
+  apiKey: "AIzaSyAIv9JzUMISyzV-hFEaQzm7jRXeYpa0BBA",
+  authDomain: "antreman-takip-d3f8d.firebaseapp.com",
+  projectId: "antreman-takip-d3f8d",
+  storageBucket: "antreman-takip-d3f8d.firebasestorage.app",
+  messagingSenderId: "91506039609",
+  appId: "1:91506039609:web:e309803ee498af7da026e8"
 };
-*/
 
 let db = null;
 let usingCloud = false;
@@ -334,6 +331,33 @@ async function loadData() {
 
   state.loaded = true;
   try { render(); } catch (err) { showFatalError("ilk yükleme: " + err.message); }
+
+  if (usingCloud) startRealtimeSync();
+}
+
+let lastRemoteWriteAt = 0;
+
+function startRealtimeSync() {
+  try {
+    firestoreDocRef().onSnapshot((snap) => {
+      if (!snap.exists) return;
+      const data = snap.data();
+      let changed = false;
+      if (data.settings && typeof data.settings === "object") { state.settings = { ...DEFAULT_SETTINGS, ...data.settings }; changed = true; }
+      if (Array.isArray(data.entries)) { state.entries = data.entries.filter((x) => x && typeof x === "object" && x.date && typeof x.kcal === "number"); changed = true; }
+      if (data.water && typeof data.water === "object") { state.water = data.water; changed = true; }
+      if (Array.isArray(data.weights)) { state.weights = data.weights.filter((x) => x && x.date && typeof x.kg === "number"); changed = true; }
+
+      // aktif bir form/modal açıkken gelen veri ekranı hemen değiştirmesin (yazılan kaydolmadan kaybolmasın)
+      if (changed && state.loaded && !state.modal) {
+        try { render(); } catch (err) { showFatalError("canlı güncelleme: " + err.message); }
+      }
+    }, (err) => {
+      console.error("Canlı senkronizasyon hatası:", err);
+    });
+  } catch (err) {
+    console.error("Canlı senkronizasyon başlatılamadı:", err);
+  }
 }
 
 async function persist(key, value) {
