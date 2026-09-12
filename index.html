@@ -918,7 +918,9 @@ function renderAddModal() {
   const m = modalState.manual;
   const inner = `
       <div class="manual-panel">
-        <label class="field"><span>Yemek adı</span><input id="manual_name" value="${esc(m.name)}" placeholder="örn: Ev yapımı mercimek yemeği" autofocus></label>
+        <label class="field"><span>Yemek adı</span><input id="manual_name" value="${esc(m.name)}" placeholder="örn: tavuk göğsü, mercimek çorbası" autocomplete="off" autofocus></label>
+        <div id="foodSuggestions">${renderSuggestions()}</div>
+        <label class="field"><span>Miktar (g) — bir sonuç seçersen otomatik hesaplanır</span><input type="number" inputmode="decimal" id="manual_grams" value="${modalState.grams}"></label>
         <label class="field"><span>Porsiyon / miktar açıklaması</span><input id="manual_portion" value="${esc(m.portion)}" placeholder="örn: 1 kase, 150g, 2 dilim"></label>
         <div class="row-2">
           <label class="field"><span>Kalori (kcal)</span><input type="number" inputmode="decimal" id="manual_kcal" value="${m.kcal}"></label>
@@ -939,6 +941,101 @@ function renderAddModal() {
       ${inner}
     </div>
   </div>`;
+}
+
+function round1(n) { return Math.round((n || 0) * 10) / 10; }
+
+let foodSearchTimer = null;
+function debounceFoodSearch(query) {
+  clearTimeout(foodSearchTimer);
+  if (!modalState) return;
+  if (!query || query.trim().length < 2) {
+    modalState.suggestions = []; modalState.searching = false;
+    updateSuggestionsUI();
+    return;
+  }
+  modalState.searching = true;
+  updateSuggestionsUI();
+  foodSearchTimer = setTimeout(() => runFoodSearch(query.trim()), 450);
+}
+
+async function runFoodSearch(query) {
+  try {
+    const url = "https://world.openfoodfacts.org/cgi/search.pl?search_terms=" + encodeURIComponent(query) +
+      "&search_simple=1&action=process&json=1&page_size=6&fields=product_name,brands,nutriments";
+    const res = await fetch(url);
+    const data = await res.json();
+    const products = (data.products || []).map((p) => {
+      const n = p.nutriments || {};
+      let kcal100 = n["energy-kcal_100g"];
+      if (kcal100 == null && n["energy_100g"] != null) kcal100 = n["energy_100g"] / 4.184;
+      if (kcal100 == null || !p.product_name) return null;
+      return {
+        name: p.product_name + (p.brands ? " (" + p.brands.split(",")[0].trim() + ")" : ""),
+        kcal100: kcal100,
+        protein100: n["proteins_100g"] || 0,
+        carb100: n["carbohydrates_100g"] || 0,
+        fat100: n["fat_100g"] || 0,
+        fiber100: n["fiber_100g"] || 0,
+      };
+    }).filter(Boolean).slice(0, 6);
+    if (modalState) { modalState.suggestions = products; modalState.searching = false; updateSuggestionsUI(); }
+  } catch (err) {
+    console.error("Gıda arama hatası:", err);
+    if (modalState) { modalState.suggestions = []; modalState.searching = false; updateSuggestionsUI(); }
+  }
+}
+
+function updateSuggestionsUI() {
+  const box = document.getElementById("foodSuggestions");
+  if (box) box.innerHTML = renderSuggestions();
+}
+
+function renderSuggestions() {
+  if (!modalState) return "";
+  if (modalState.searching) return `<div class="empty-state small">Aranıyor…</div>`;
+  if (!modalState.suggestions || modalState.suggestions.length === 0) return "";
+  return `<div class="food-list">
+    ${modalState.suggestions.map((p, i) => `<button class="food-item" data-action="pick-food-suggestion" data-index="${i}"><span>${esc(p.name)}</span><span class="muted small">${Math.round(p.kcal100)} kcal/100g</span></button>`).join("")}
+  </div>
+  <div class="muted small" style="margin:-4px 0 10px">Kaynak: Open Food Facts</div>`;
+}
+
+function recalcFromProduct() {
+  if (!modalState || !modalState.selectedProduct) return;
+  const grams = Number(document.getElementById("manual_grams")?.value) || 0;
+  modalState.grams = grams;
+  const p = modalState.selectedProduct;
+  const vals = {
+    kcal: Math.round(p.kcal100 * grams / 100),
+    protein: round1(p.protein100 * grams / 100),
+    carb: round1(p.carb100 * grams / 100),
+    fat: round1(p.fat100 * grams / 100),
+    fiber: round1(p.fiber100 * grams / 100),
+  };
+  modalState.manual.kcal = vals.kcal; modalState.manual.protein = vals.protein;
+  modalState.manual.carb = vals.carb; modalState.manual.fat = vals.fat; modalState.manual.fiber = vals.fiber;
+  const kcalEl = document.getElementById("manual_kcal"); if (kcalEl) kcalEl.value = vals.kcal;
+  const proteinEl = document.getElementById("manual_protein"); if (proteinEl) proteinEl.value = vals.protein;
+  const carbEl = document.getElementById("manual_carb"); if (carbEl) carbEl.value = vals.carb;
+  const fatEl = document.getElementById("manual_fat"); if (fatEl) fatEl.value = vals.fat;
+  const fiberEl = document.getElementById("manual_fiber"); if (fiberEl) fiberEl.value = vals.fiber;
+}
+
+// Modal açıkken, tam bir render() tetiklenmeden önce (ör. öğün seçimi), o an
+// DOM'daki serbest metin alanlarını modalState'e senkronize eder ki kullanıcının
+// yazdığı veri render sırasında kaybolmasın.
+function syncModalManualFromDOM() {
+  if (!modalState) return;
+  const g = (id) => document.getElementById(id);
+  if (g("manual_name")) modalState.manual.name = g("manual_name").value;
+  if (g("manual_portion")) modalState.manual.portion = g("manual_portion").value;
+  if (g("manual_kcal")) modalState.manual.kcal = g("manual_kcal").value;
+  if (g("manual_protein")) modalState.manual.protein = g("manual_protein").value;
+  if (g("manual_carb")) modalState.manual.carb = g("manual_carb").value;
+  if (g("manual_fat")) modalState.manual.fat = g("manual_fat").value;
+  if (g("manual_fiber")) modalState.manual.fiber = g("manual_fiber").value;
+  if (g("manual_grams")) modalState.grams = Number(g("manual_grams").value) || modalState.grams;
 }
 
 function renderMealAndTime() {
@@ -993,24 +1090,41 @@ document.addEventListener("click", (e) => {
     case "next-day": state.selectedDate = addDays(state.selectedDate, 1); render(); break;
 
     case "open-add":
-      modalState = { editId: null, meal: guessMeal(), time: nowTime(), date: state.selectedDate,
+      modalState = { editId: null, meal: guessMeal(), time: nowTime(), date: state.selectedDate, grams: 100, selectedProduct: null, suggestions: [], searching: false,
         manual: { name: "", portion: "", kcal: "", protein: "", carb: "", fat: "", fiber: "" } };
       state.modal = "add"; render(); break;
     case "open-add-today":
       state.selectedDate = todayISO();
-      modalState = { editId: null, meal: guessMeal(), time: nowTime(), date: todayISO(),
+      modalState = { editId: null, meal: guessMeal(), time: nowTime(), date: todayISO(), grams: 100, selectedProduct: null, suggestions: [], searching: false,
         manual: { name: "", portion: "", kcal: "", protein: "", carb: "", fat: "", fiber: "" } };
       state.modal = "add"; render(); break;
     case "open-edit": {
       const entry = state.entries.find((x) => x.id === btn.dataset.id);
       if (!entry) return;
-      modalState = { editId: entry.id, meal: entry.meal, time: entry.time, date: entry.date,
+      modalState = { editId: entry.id, meal: entry.meal, time: entry.time, date: entry.date, grams: 100, selectedProduct: null, suggestions: [], searching: false,
         manual: { name: entry.name, portion: entry.portion || "", kcal: entry.kcal, protein: entry.protein, carb: entry.carb, fat: entry.fat, fiber: entry.fiber || 0 } };
       state.modal = "add"; render(); break;
     }
     case "close-modal": state.modal = null; modalState = null; render(); break;
 
-    case "set-meal": modalState.meal = btn.dataset.meal; render(); break;
+    case "set-meal": syncModalManualFromDOM(); modalState.meal = btn.dataset.meal; render(); break;
+
+    case "pick-food-suggestion": {
+      const idx = Number(btn.dataset.index);
+      const p = modalState.suggestions[idx];
+      if (!p) return;
+      syncModalManualFromDOM();
+      modalState.selectedProduct = p;
+      modalState.manual.name = p.name;
+      if (!modalState.manual.portion) modalState.manual.portion = modalState.grams + " g";
+      modalState.manual.kcal = Math.round(p.kcal100 * modalState.grams / 100);
+      modalState.manual.protein = round1(p.protein100 * modalState.grams / 100);
+      modalState.manual.carb = round1(p.carb100 * modalState.grams / 100);
+      modalState.manual.fat = round1(p.fat100 * modalState.grams / 100);
+      modalState.manual.fiber = round1(p.fiber100 * modalState.grams / 100);
+      modalState.suggestions = [];
+      render(); break;
+    }
 
     case "confirm-add-manual": {
       const name = document.getElementById("manual_name")?.value.trim();
@@ -1082,6 +1196,18 @@ document.addEventListener("click", (e) => {
     }
   }
   } catch (err) { showFatalError((action || "?") + ": " + err.message); }
+});
+
+document.addEventListener("input", (e) => {
+  try {
+    if (e.target.id === "manual_name" && modalState && !modalState.editId) {
+      modalState.selectedProduct = null;
+      debounceFoodSearch(e.target.value);
+    }
+    if (e.target.id === "manual_grams" && modalState && modalState.selectedProduct) {
+      recalcFromProduct();
+    }
+  } catch (err) { showFatalError("input: " + err.message); }
 });
 
 document.addEventListener("change", (e) => {
