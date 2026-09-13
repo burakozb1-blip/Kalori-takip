@@ -961,29 +961,40 @@ function debounceFoodSearch(query) {
 
 async function runFoodSearch(query) {
   try {
-    const url = "https://world.openfoodfacts.org/cgi/search.pl?search_terms=" + encodeURIComponent(query) +
-      "&search_simple=1&action=process&json=1&page_size=6&fields=product_name,brands,nutriments";
-    const res = await fetch(url);
-    const data = await res.json();
-    const products = (data.products || []).map((p) => {
-      const n = p.nutriments || {};
-      let kcal100 = n["energy-kcal_100g"];
-      if (kcal100 == null && n["energy_100g"] != null) kcal100 = n["energy_100g"] / 4.184;
-      if (kcal100 == null || !p.product_name) return null;
-      return {
-        name: p.product_name + (p.brands ? " (" + p.brands.split(",")[0].trim() + ")" : ""),
-        kcal100: kcal100,
-        protein100: n["proteins_100g"] || 0,
-        carb100: n["carbohydrates_100g"] || 0,
-        fat100: n["fat_100g"] || 0,
-        fiber100: n["fiber_100g"] || 0,
-      };
-    }).filter(Boolean).slice(0, 6);
-    if (modalState) { modalState.suggestions = products; modalState.searching = false; updateSuggestionsUI(); }
+    const products = await fetchOFF("https://tr.openfoodfacts.org/cgi/search.pl", query);
+    let finalProducts = products;
+    if (finalProducts.length === 0) {
+      // Türkiye veritabanında sonuç yoksa, dünya veritabanında Türkçe dil tercihiyle dene
+      finalProducts = await fetchOFF("https://world.openfoodfacts.org/cgi/search.pl", query);
+    }
+    if (modalState) { modalState.suggestions = finalProducts; modalState.searching = false; updateSuggestionsUI(); }
   } catch (err) {
     console.error("Gıda arama hatası:", err);
     if (modalState) { modalState.suggestions = []; modalState.searching = false; updateSuggestionsUI(); }
   }
+}
+
+async function fetchOFF(baseUrl, query) {
+  const url = baseUrl + "?search_terms=" + encodeURIComponent(query) +
+    "&search_simple=1&action=process&json=1&page_size=6&lc=tr" +
+    "&fields=product_name,product_name_tr,brands,nutriments";
+  const res = await fetch(url);
+  const data = await res.json();
+  return (data.products || []).map((p) => {
+    const n = p.nutriments || {};
+    let kcal100 = n["energy-kcal_100g"];
+    if (kcal100 == null && n["energy_100g"] != null) kcal100 = n["energy_100g"] / 4.184;
+    const displayName = p.product_name_tr || p.product_name;
+    if (kcal100 == null || !displayName) return null;
+    return {
+      name: displayName + (p.brands ? " (" + p.brands.split(",")[0].trim() + ")" : ""),
+      kcal100: kcal100,
+      protein100: n["proteins_100g"] || 0,
+      carb100: n["carbohydrates_100g"] || 0,
+      fat100: n["fat_100g"] || 0,
+      fiber100: n["fiber_100g"] || 0,
+    };
+  }).filter(Boolean).slice(0, 6);
 }
 
 function updateSuggestionsUI() {
